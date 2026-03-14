@@ -68,7 +68,7 @@ router.get('/listar-clientes', async (req, res) => {
       param: [
         {
           pagina: 1,
-          registros_por_pagina: 50, // Aumentei para trazer até 50 produtos
+          registros_por_pagina: 50,
           apenas_importado_api: "N"
         }
       ]
@@ -95,13 +95,45 @@ router.get('/listar-clientes', async (req, res) => {
 });
 
 router.post('/cadastrar-cliente', async (req, res) => {
-  const {nome, cnpj_cpf, email} = req.body;
+  const {nome, cnpj_cpf, email, cep, endereco_numero} = req.body;
 
-  if (!nome || !cnpj_cpf || !email) {
-    return res.status(400).json({ erro: "O nome e o CPF são obrigatorios para o cadastro."});
+  console.log("👀 DADOS QUE CHEGARAM DA IA:", req.body);
+
+  if (!nome || !cnpj_cpf || !email || !cep || !endereco_numero) {
+    return res.status(400).json({ erro: "O nome, CPF, CEP, Email são obrigatorios para o cadastro."});
   }
 
   try {
+    const pacoteConsulta = {
+        call: 'ConsultarCliente',
+        app_key: process.env.OMIE_APP_KEY,
+        app_secret: process.env.OMIE_APP_SECRET,
+        param: [{ codigo_cliente_integracao: cpfLimpo }]
+    };
+    
+    await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', pacoteConsulta);
+    
+    return res.status(400).json({ 
+        sucesso: false, 
+        mensagem: "Ei, esse CPF já está cadastrado no nosso sistema!" 
+    });
+
+  } catch (erroConsulta) {
+      console.log("Cliente não existe ainda. Seguindo com o cadastro...");
+  }
+
+  try {
+
+    const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, ''); 
+    const cepLimpo = String(cep).replace(/\D/g, '');
+
+    const respostaViaCep = await axios.get(`https://viacep.com.br/ws/${cepLimpo}/json/`);
+
+    if (respostaViaCep.data.erro) {
+      return res.status(400).json({ erro: "CEP não encontrado. Verifique se digitou corretamente." });
+    }
+
+    const enderecoEncontrado = respostaViaCep.data;
 
     const pacoteDadosCadastro = {
       call: 'IncluirCliente',
@@ -109,15 +141,15 @@ router.post('/cadastrar-cliente', async (req, res) => {
       app_secret: process.env.OMIE_APP_SECRET,
       param: [{
         codigo_cliente_integracao: cnpj_cpf,
-        cnpj_cpf: cnpj_cpf,
+        cnpj_cpf: cnpj_cpfLimpo,
         razao_social: nome,
         email: email,
-        endereco: "Rua Santa Izabel",
-        endereco_numero: 99,
-        cep: "52070245",
-        estado: "PE",
-        cidade: "RECIFE",
-        bairro: "Casa Amarela",
+        endereco: enderecoEncontrado.logradouro,
+        endereco_numero: endereco_numero,
+        cep: cepLimpo,
+        estado: enderecoEncontrado.uf,
+        cidade: enderecoEncontrado.localidade,
+        bairro: enderecoEncontrado.bairro,
         contribuinte: "N"
       }]
     };
