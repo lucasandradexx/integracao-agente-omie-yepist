@@ -41,7 +41,7 @@ router.post('/estoque', async (req, res) => {
   }
 });
 
-// Rota para listar os produtos e descobrirmos os códigos!
+// ROTA 1: LISTAR PRODUTOS
 router.get('/listar-produtos', async (req, res) => {
   try {
     const respostaOmie = await axios.post('https://app.omie.com.br/api/v1/geral/produtos/', {
@@ -50,18 +50,17 @@ router.get('/listar-produtos', async (req, res) => {
       app_secret: process.env.OMIE_APP_SECRET,
       param: [
         {
-          pagina: 4,
-          registros_por_pagina: 500, // Aumentei para trazer até 50 produtos
+          pagina: 1,
+          registros_por_pagina: 50,
           apenas_importado_api: "N",
           filtrar_apenas_omiepdv: "N"
         }
       ]
     });
 
-    // Vamos limpar a resposta para mostrar só o nome e o código que precisamos
     const listaLimpa = respostaOmie.data.produto_servico_cadastro.map(produto => ({
       nome: produto.descricao,
-      codigo_para_usar_no_estoque: produto.codigo_produto, // Esse é o nCodProd!
+      codigo_produto: produto.codigo_produto,
       codigo_produto_integracao: produto.codigo_produto_integracao,
       codigo: produto.codigo
     }));
@@ -74,45 +73,7 @@ router.get('/listar-produtos', async (req, res) => {
   }
 });
 
-router.post('/consultar-produto', async (req, res) => {
-
-  try {
-    const { codigo } = req.body;
-
-    const pacoteDados = {
-      call: "ConsultarProduto",
-      app_key: process.env.OMIE_APP_KEY,
-      app_secret: process.env.OMIE_APP_SECRET,
-      param: [
-        {
-          codigo_produto: Number(codigo)
-        }
-      ]
-    };
-
-    const respostaOmie = await axios.post('https://app.omie.com.br/api/v1/geral/produtos/', pacoteDados);
-    if (respostaOmie.data && respostaOmie.data.codigo_produto) {
-      return res.json({
-        existe: true,
-        nome: respostaOmie.data.descricao,
-        codigo: respostaOmie.data.codigo_produto,
-        valor_unitario: respostaOmie.data.valor_unitario,
-        mensagem: `Encontrei o produto ${respostaOmie.data.descricao} no sistema.`
-      });
-    } else {
-        return res.json({
-          existe: false,
-          mensagem: "Produto não encontrado na base da Omie."
-        });
-    }
-
-  } catch (error) {
-    console.error("Erro na Omie:", error.respostaOmie?.data || error.message);
-    return res.status(500).json({ erro: "Falha ao consultar a Omie" });
-  }
-
-})
-
+// ROTA 2: LISTAR PRODUTOS COM UM FILTRO DE PALAVRA
 router.post('/listar-produtos-palavra', async (req, res) => {
 
   const { nome_produto } = req.body;
@@ -128,7 +89,7 @@ router.post('/listar-produtos-palavra', async (req, res) => {
       param: [
         {
           pagina: 1,
-          registros_por_pagina: 20,
+          registros_por_pagina: 50,
           apenas_importado_api: "N",
           filtrar_apenas_omiepdv: "N",
           filtrar_apenas_descricao: `%${nome_produto}%`
@@ -136,10 +97,9 @@ router.post('/listar-produtos-palavra', async (req, res) => {
       ]
     });
 
-    // Vamos limpar a resposta para mostrar só o nome e o código que precisamos
     const listaLimpa = respostaOmie.data.produto_servico_cadastro.map(produto => ({
       nome: produto.descricao,
-      codigo_para_usar_no_estoque: produto.codigo_produto, // Esse é o nCodProd!
+      codigo_produto: produto.codigo_produto, 
       codigo_produto_integracao: produto.codigo_produto_integracao,
       codigo: produto.codigo
     }));
@@ -152,50 +112,138 @@ router.post('/listar-produtos-palavra', async (req, res) => {
   }
 });
 
-router.post('/buscar-id-produto', async (req, res) => {
-  const { nome_produto } = req.body;
+// ROTA 3: CONSULTAR PRODUTO 
+router.post('/consultar-produto', async (req, res) => {
 
   try {
-    // 1. No Thunder Client, envie: { "nome_produto": "YEPIST" }
-    
+    const { nome_produto } = req.body;
+    console.log("👀 DADOS QUE CHEGARAM DA IA PARA A CONSULTA DE PRODUTO:", req.body);
 
     const buscaData = {
       call: "ListarProdutos",
       app_key: process.env.OMIE_APP_KEY,
       app_secret: process.env.OMIE_APP_SECRET,
+      param: [{
+        pagina: 1,
+        registros_por_pagina: 1, 
+        apenas_importado_api: "N",
+        filtrar_apenas_omiepdv: "N",
+        filtrar_apenas_descricao: nome_produto 
+      }]
+    };
+
+    console.log("Iniciando etapa 1 (Busca ID)");
+    const respostaLista = await axios.post('https://app.omie.com.br/api/v1/geral/produtos/', buscaData);
+    
+    const lista = respostaLista.data.produto_servico_cadastro || [];
+    if (lista.length === 0) {
+      console.log("<- Produto não encontrado na etapa 1.");
+      return res.json({ existe: false, mensagem: "Infelizmente não encontrei esse produto exato no sistema." });
+    }
+
+    const idEncontrado = lista[0].codigo_produto;
+    console.log(`ID Encontrado: ${idEncontrado}`);
+
+    const pacoteDados = {
+      call: "ConsultarProduto",
+      app_key: process.env.OMIE_APP_KEY,
+      app_secret: process.env.OMIE_APP_SECRET,
+      param: [{
+        codigo_produto: Number(idEncontrado)
+      }]
+    };
+
+    console.log("Iniciando Etapa 2 (Consulta detalhada)");
+    const respostaConsulta = await axios.post('https://app.omie.com.br/api/v1/geral/produtos/', pacoteDados);
+    
+    const produtoDetalhado = respostaConsulta.data;
+    if (!produtoDetalhado.codigo_produto) {
+       console.log("Falha na etapa 2 (Não retornou detalhes).");
+       return res.json({ existe: false, mensagem: "Produto encontrado, mas houve falha ao obter os detalhes." });
+    }
+
+    console.log(`Produto detalhado: ${produtoDetalhado.descricao}`);
+    return res.json({
+      existe: true,
+      nome: produtoDetalhado.descricao,
+      codigo: produtoDetalhado.codigo_produto,
+      valor_unitario: produtoDetalhado.valor_unitario,
+      mensagem: `Encontrei o produto ${produtoDetalhado.descricao} no sistema. O preço unitário é R$ ${produtoDetalhado.valor_unitario}.`
+    });
+
+  } catch (error) {
+    console.error("ERRO CRÍTICO NA CONSULTA:", error.response?.data || error.message);
+    return res.status(500).json({ erro: "Falha interna ao tentar consultar o produto na Omie." });
+  }
+});
+
+router.post('/criar-pedido', async (req, res) => {
+  try {
+    // 1. Agora recebemos um array chamado 'itens' que a Emily vai montar
+    const { codigo_cliente_omie, itens } = req.body;
+    
+    console.log("🛒 DADOS DO PEDIDO RECEBIDOS DA IA:", req.body);
+
+    // 2. Montamos as linhas do pedido dinamicamente (pode ser 1 ou 100 produtos)
+    const detalhesPedido = itens.map((item, index) => {
+      return {
+        "ide": {
+          "codigo_item_integracao": (index + 1).toString() // Gera linha 1, 2, 3...
+        },
+        "produto": {
+          "codigo_produto": Number(item.codigo_produto),
+          "quantidade": Number(item.quantidade),
+          "valor_unitario": Number(item.valor_unitario)
+        }
+      };
+    });
+
+    const dataAtual = new Date();
+    const dataFormatada = String(dataAtual.getDate()).padStart(2, '0') + '/' + 
+                          String(dataAtual.getMonth() + 1).padStart(2, '0') + '/' + 
+                          dataAtual.getFullYear();
+
+    // 3. Montamos o pacote final
+    const pacotePedido = {
+      call: "IncluirPedido",
+      app_key: process.env.OMIE_APP_KEY,
+      app_secret: process.env.OMIE_APP_SECRET,
       param: [
         {
-          pagina: 1,
-          registros_por_pagina: 1,
-          apenas_importado_api: "N",
-          filtrar_apenas_omiepdv: "N",
-          filtrar_apenas_descricao: nome_produto
+          "cabecalho": {
+            "codigo_cliente": Number(codigo_cliente_omie),
+            "codigo_pedido_integracao": Date.now().toString(), // 🌟 A MÁGICA AQUI!
+            "data_previsao": dataFormatada,
+            "quantidade_itens": detalhesPedido.length,
+            "origem_pedido": "API"
+          },
+          "det": detalhesPedido,
+          "informacoes_adicionais": {
+            "codigo_categoria": "1.01.03", // Categoria padrão de Venda de Produtos
+            "codigo_conta_corrente": 0, // ⚠️ Pode ser que a Omie exija o ID real da sua conta
+            "consumidor_final": "S"
+          }
         }
       ]
     };
 
-    // Log para ver o JSON antes de enviar (se houver erro de tag, veremos aqui)
-    console.log("JSON de Busca:", JSON.stringify(buscaData, null, 2));
+    console.log("-> A enviar o pedido múltiplo para a Omie...");
+    const respostaOmie = await axios.post('https://app.omie.com.br/api/v1/produtos/pedido/', pacotePedido);
 
-    const response = await axios.post('https://app.omie.com.br/api/v1/geral/produtos/', buscaData);
+    const numeroPedido = respostaOmie.data.numero_pedido;
+    console.log(`✅ Pedido Criado com Sucesso! Número: ${numeroPedido}`);
 
-    // 2. A Omie retorna uma lista chamada 'produto_servico_resumo'
-    if (response.data.produto_servico_cadastro && response.data.produto_servico_cadastro.length > 0) {
-      const produto = response.data.produto_servico_cadastro[0];
-      
-      return res.json({
-        sucesso: true,
-        id_encontrado: produto.codigo_produto, // Este é o número que a Emily vai precisar
-        nome_completo: produto.descricao
-      });
-    } else {
-      return res.json({ sucesso: false, mensagem: "Nenhum produto com esse nome." });
-    }
+    return res.json({
+      sucesso: true,
+      mensagem: `Uhuul! Pedido gerado com sucesso! O número do pedido é ${numeroPedido}.`
+    });
 
   } catch (error) {
-    // Se der erro 5001 (SOAP-ENV), o erro detalhado aparecerá aqui
-    console.error("Erro na busca Omie:", error.response?.data || error.message);
-    return res.status(500).json({ erro: "Falha na busca" });
+    console.error("⛔ ERRO AO CRIAR PEDIDO:", error.response?.data || error.message);
+    return res.status(500).json({ 
+      sucesso: false, 
+      erro: "Não foi possível gerar o pedido no sistema." 
+    });
   }
 });
 
