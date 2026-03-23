@@ -179,12 +179,40 @@ router.post('/consultar-produto', async (req, res) => {
 
 router.post('/criar-pedido', async (req, res) => {
   try {
-    // 1. Agora recebemos um array chamado 'itens' que a Emily vai montar
-    const { codigo_cliente_omie, itens } = req.body;
+    const { cnpj_cpf, itens } = req.body;
+
+    if (!cnpj_cpf) {
+     return res.status(400).json({ erro: 'Você esqueceu de mandar o CPF!' });
+    }
+
+    const respostaCpf = await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', {
+          call: 'ListarClientes',
+          app_key: process.env.OMIE_APP_KEY,
+          app_secret: process.env.OMIE_APP_SECRET,
+          param: [
+            { 
+              pagina: 1,
+              registros_por_pagina: 10,
+              clientesFiltro: {
+                cnpj_cpf: cnpj_cpf
+              }
+            }
+          ] 
+        }); 
+    
+        if (respostaCpf.data.clientes_cadastro && respostaCpf.data.clientes_cadastro.length > 0) {
+          const clientEncontrado = respostaCpf.data.clientes_cadastro[0];
+        } else {
+          return res.json({
+            cadastrado: false,
+            mensagem: "Cliente não encontrado na base de dados"
+          })
+        }
+
+    const codigo_cliente = clientEncontrado.codigo_cliente_omie;
     
     console.log("🛒 DADOS DO PEDIDO RECEBIDOS DA IA:", req.body);
 
-    // 2. Montamos as linhas do pedido dinamicamente (pode ser 1 ou 100 produtos)
     const detalhesPedido = itens.map((item, index) => {
       return {
         "ide": {
@@ -219,8 +247,8 @@ router.post('/criar-pedido', async (req, res) => {
           },
           "det": detalhesPedido,
           "informacoes_adicionais": {
-            "codigo_categoria": "1.01.03", // Categoria padrão de Venda de Produtos
-            "codigo_conta_corrente": 0, // ⚠️ Pode ser que a Omie exija o ID real da sua conta
+            "codigo_categoria": "1.01.95", // Categoria padrão de Venda de Produtos
+            "codigo_conta_corrente": "3152079535", // ⚠️ Pode ser que a Omie exija o ID real da sua conta
             "consumidor_final": "S"
           }
         }
@@ -246,5 +274,7 @@ router.post('/criar-pedido', async (req, res) => {
     });
   }
 });
+
+
 
 module.exports = router;
