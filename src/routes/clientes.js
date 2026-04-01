@@ -104,25 +104,6 @@ router.post('/cadastrar-cliente', async (req, res) => {
   }
 
   try {
-    const pacoteConsulta = {
-        call: 'ConsultarCliente',
-        app_key: process.env.OMIE_APP_KEY,
-        app_secret: process.env.OMIE_APP_SECRET,
-        param: [{ codigo_cliente_integracao: cpfLimpo }]
-    };
-    
-    await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', pacoteConsulta);
-    
-    return res.status(400).json({ 
-        sucesso: false, 
-        mensagem: "Ei, esse CPF já está cadastrado no nosso sistema!" 
-    });
-
-  } catch (erroConsulta) {
-      console.log("Cliente não existe ainda. Seguindo com o cadastro...");
-  }
-
-  try {
 
     const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, ''); 
     const cepLimpo = String(cep).replace(/\D/g, '');

@@ -2,46 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const router = express.Router();
 
-router.post('/estoque', async (req, res) => {
-  
-  const codigo_produto = req.body.codigo_produto;
-
-  if (!codigo_produto) {
-    return res.status(400).json({ erro: 'Você esqueceu de mandar o codigo_produto!' });
-  }
-
-  try {
-    const respostaOmie = await axios.post('https://app.omie.com.br/api/v1/estoque/resumo/', {
-      call: 'ObterEstoqueProduto',
-      app_key: process.env.OMIE_APP_KEY,
-      app_secret: process.env.OMIE_APP_SECRET,
-      param: [
-        { 
-          nIdProduto: parseInt(codigo_produto)
-        }
-      ] 
-    });
-
-    console.log("Resposta da Omie:", JSON.stringify(respostaOmie.data, null, 2));
-
-    let saldo = 0;
-    if (respostaOmie.data.listaEstoque && respostaOmie.data.listaEstoque.length > 0) {
-        saldo = respostaOmie.data.listaEstoque[0].nDisponivel || 0;
-    }
-
-    res.json({
-      sucesso: true,
-      produto_id: codigo_produto,
-      saldo_disponivel: saldo
-    });
-
-  } catch (error) {
-    console.log("Deu erro na Omie:", error.respostaOmie?.data || error.message);
-    res.status(500).json({ erro: 'Erro ao consultar a Omie' });
-  }
-});
-
-// ROTA 1: LISTAR PRODUTOS
+// ROTA 1: LISTAR PRODUTOS (ROTA NAO UTILIZADA PELA IA)
 router.get('/listar-produtos', async (req, res) => {
   try {
     const respostaOmie = await axios.post('https://app.omie.com.br/api/v1/geral/produtos/', {
@@ -73,7 +34,7 @@ router.get('/listar-produtos', async (req, res) => {
   }
 });
 
-// ROTA 2: LISTAR PRODUTOS COM UM FILTRO DE PALAVRA
+// ROTA 2: LISTAR PRODUTOS COM UM FILTRO DE PALAVRA (ROTA NAO UTILIZADA PELA IA)
 router.post('/listar-produtos-palavra', async (req, res) => {
 
   const { nome_produto } = req.body;
@@ -112,7 +73,7 @@ router.post('/listar-produtos-palavra', async (req, res) => {
   }
 });
 
-// ROTA 3: CONSULTAR PRODUTO 
+// ROTA 3: CONSULTAR PRODUTO (ROTA UTILIZADA PELA IA)
 router.post('/consultar-produto', async (req, res) => {
 
   try {
@@ -177,51 +138,54 @@ router.post('/consultar-produto', async (req, res) => {
   }
 });
 
+//ROTA 4: CRIAR PEDIDO (ROTA UTILIZADA PELA IA)
 router.post('/criar-pedido', async (req, res) => {
   try {
-    const { cnpj_cpf, itens } = req.body;
+    const { cnpj_cpf, produtos } = req.body;
+
+    
+    console.log("🛒 DADOS DO PEDIDO RECEBIDOS DA IA:", req.body); 
 
     if (!cnpj_cpf) {
      return res.status(400).json({ erro: 'Você esqueceu de mandar o CPF!' });
     }
 
     const respostaCpf = await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', {
-          call: 'ListarClientes',
-          app_key: process.env.OMIE_APP_KEY,
-          app_secret: process.env.OMIE_APP_SECRET,
-          param: [
-            { 
-              pagina: 1,
-              registros_por_pagina: 10,
-              clientesFiltro: {
-                cnpj_cpf: cnpj_cpf
-              }
-            }
-          ] 
-        }); 
-    
-        if (respostaCpf.data.clientes_cadastro && respostaCpf.data.clientes_cadastro.length > 0) {
-          const clientEncontrado = respostaCpf.data.clientes_cadastro[0];
-        } else {
-          return res.json({
-            cadastrado: false,
-            mensagem: "Cliente não encontrado na base de dados"
-          })
+      call: 'ListarClientes',
+      app_key: process.env.OMIE_APP_KEY,
+      app_secret: process.env.OMIE_APP_SECRET,
+      param: [
+        { 
+          pagina: 1,
+          registros_por_pagina: 1,
+          clientesFiltro: {
+            cnpj_cpf: cnpj_cpf
+          }
         }
+      ] 
+    }); 
 
-    const codigo_cliente = clientEncontrado.codigo_cliente_omie;
-    
-    console.log("🛒 DADOS DO PEDIDO RECEBIDOS DA IA:", req.body);
+    let codigo_cliente = null;
 
-    const detalhesPedido = itens.map((item, index) => {
+    if (respostaCpf.data.clientes_cadastro && respostaCpf.data.clientes_cadastro.length > 0) {
+      const clienteEncontrado = respostaCpf.data.clientes_cadastro[0];
+      codigo_cliente = clienteEncontrado.codigo_cliente_omie;
+    } else {
+      return res.json({
+        cadastrado: false,
+        mensagem: "Cliente não encontrado na base de dados"
+      })
+    }
+
+    const detalhesPedido = produtos.map((produto, index) => {
       return {
         "ide": {
           "codigo_item_integracao": (index + 1).toString() // Gera linha 1, 2, 3...
         },
         "produto": {
-          "codigo_produto": Number(item.codigo_produto),
-          "quantidade": Number(item.quantidade),
-          "valor_unitario": Number(item.valor_unitario)
+          "codigo_produto": Number(produto.codigo_produto),
+          "quantidade": Number(produto.quantidade),
+          "valor_unitario": Number(produto.valor_unitario)
         }
       };
     });
@@ -239,7 +203,7 @@ router.post('/criar-pedido', async (req, res) => {
       param: [
         {
           "cabecalho": {
-            "codigo_cliente": Number(codigo_cliente_omie),
+            "codigo_cliente": Number(codigo_cliente),
             "codigo_pedido_integracao": Date.now().toString(), // 🌟 A MÁGICA AQUI!
             "data_previsao": dataFormatada,
             "quantidade_itens": detalhesPedido.length,
@@ -263,16 +227,16 @@ router.post('/criar-pedido', async (req, res) => {
 
     return res.json({
       sucesso: true,
-      mensagem: `Uhuul! Pedido gerado com sucesso! O número do pedido é ${numeroPedido}.`
+      mensagem: `Pedido gerado com sucesso! O número do pedido é ${numeroPedido}.`
     });
 
-  } catch (error) {
-    console.error("⛔ ERRO AO CRIAR PEDIDO:", error.response?.data || error.message);
-    return res.status(500).json({ 
-      sucesso: false, 
-      erro: "Não foi possível gerar o pedido no sistema." 
-    });
-  }
+} catch (error) {
+  console.error("⛔ ERRO AO CRIAR PEDIDO:", error.response?.data || error.message);
+  return res.status(500).json({ 
+    sucesso: false, 
+    erro: "Não foi possível gerar o pedido no sistema." 
+  });
+}
 });
 
 
