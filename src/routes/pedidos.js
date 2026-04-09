@@ -99,7 +99,7 @@ router.post('/criar-pedido', async (req, res) => {
     const respostaOmie = await axios.post('https://app.omie.com.br/api/v1/produtos/pedido/', pacotePedido);
 
     const numeroPedido = respostaOmie.data.numero_pedido;
-    console.log(`✅ Pedido Criado com Sucesso! Número: ${numeroPedido}`);
+    console.log(`✅ Pedido Criado com Sucesso! Número: ${numeroPedido} e codigo: ${respostaOmie.data.codigo_pedido}`);
 
     return res.json({
       sucesso: true,
@@ -187,6 +187,45 @@ router.post('/consultar-cobranca', async (req, res) => {
         console.error("Erro ao buscar cobrança na Omie:", error.response?.data || error.message);
         return res.status(500).json({ erro: "Falha ao buscar a cobrança." });
     }
+});
+
+router.post('/consultar-pedido', async (req, res) => {
+
+  try {
+    const { numero_pedido_omie } = req.body;
+
+    if (!numero_pedido_omie) {
+      return res.status(400).json({ 
+        erro: "Código do cliente e número do pedido são obrigatórios." 
+      });
+    }
+
+    const pacoteConsulta = {
+      "call": "ConsultarPedido",
+      "app_key": process.env.OMIE_APP_KEY,
+      "app_secret": process.env.OMIE_APP_SECRET,
+      "param": [{
+        "codigo_pedido": numero_pedido_omie
+      }]
+    };
+
+    const response = await axios.post('https://app.omie.com.br/api/v1/produtos/pedido/', pacoteConsulta);
+    const pedido = response.data;
+      return res.json({
+        sucesso: true,
+        Dados: pedido
+      });
+  } catch (error) {
+      // A MÁGICA AQUI: Vai tentar ler os dados da resposta da Omie, se não tiver, lê a mensagem padrão
+      console.error("❌ Erro na consulta:", error.response?.data || error.message);
+      
+      return res.status(500).json({
+        sucesso: false,
+        erro: "Erro interno ao consultar o pedido na Omie."
+      });
+    }
+
+
 });
 
 function construirParcelas(valorTotal, forma_pagamento) {

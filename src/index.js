@@ -17,7 +17,7 @@ app.use('/', rotasDeCliente);
 app.use('/', rotasDeProduto);
 app.use('/', rotasDePedido);
 
-const PORTA = 3000;
+const PORTA = process.env.PORT || 3000;
 app.listen(PORTA, () => {
   console.log(`✅ Servidor rodando na porta ${PORTA} e pronto para a Omie!`);
 });
