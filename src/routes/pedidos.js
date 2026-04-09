@@ -12,6 +12,8 @@ router.post('/criar-pedido', async (req, res) => {
     if (!cnpj_cpf) {
      return res.status(400).json({ erro: 'Você esqueceu de mandar o CPF!' });
     }
+    
+    const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, '');
 
     let valorTotalPedido = 0;
     req.body.produtos.forEach(produto => {
@@ -29,7 +31,7 @@ router.post('/criar-pedido', async (req, res) => {
           pagina: 1,
           registros_por_pagina: 1,
           clientesFiltro: {
-            cnpj_cpf: cnpj_cpf
+            cnpj_cpf: cnpj_cpfLimpo
           }
         }
       ] 
@@ -121,71 +123,82 @@ router.post('/criar-pedido', async (req, res) => {
 // ROTA 2: CONSULTAR BOLETOS/PIX PELO NÚMERO DO PEDIDO
 router.post('/consultar-cobranca', async (req, res) => {
     try {
-        const { cnpj_cpf, numero_pedido_omie } = req.body; 
-        console.log("👀 DADOS QUE CHEGARAM DA IA:", req.body);
+      const { cnpj_cpf, numero_pedido_omie } = req.body; 
+      console.log("👀 DADOS QUE CHEGARAM DA IA:", req.body);
 
-        const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, ''); 
+      const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, '');
 
-        if (!cnpj_cpf || !numero_pedido_omie) {
-            return res.status(400).json({ 
-                erro: "Código do cliente e número do pedido são obrigatórios." 
-            });
-        }
+      // ==========================================
+      // PASSO 1: Buscar os Títulos Financeiros do Cliente
+      // ==========================================
 
-        const pacoteConsulta = {
-            "call": "ListarContasReceber",
-            "app_key": process.env.OMIE_APP_KEY,
-            "app_secret": process.env.OMIE_APP_SECRET,
-            "param": [{
-                "pagina": 1,
-                "registros_por_pagina": 20, 
-                "apenas_importado_api": "N",
-                "filtrar_por_cpf_cnpj": cnpj_cpfLimpo
-            }]
-        };
+      const pacoteListar = {
+        call: "ListarContasReceber",
+        app_key: process.env.OMIE_APP_KEY,
+        app_secret: process.env.OMIE_APP_SECRET,
+        param: [{
+          pagina: 1,
+          registros_por_pagina: 50,
+          filtrar_por_cpf_cnpj: cnpj_cpfLimpo // Filtra pelo CPF para a busca ser super rápida
+        }]
+      };
 
-        const response = await axios.post('https://app.omie.com.br/api/v1/financas/contareceber/', pacoteConsulta);
-        const contas = response.data.conta_receber_cadastro;
-        
-        if (!contas || contas.length === 0) {
-            return res.status(404).json({ 
-                mensagem: "O banco ainda está gerando o link. Aguarde alguns segundos." 
-            });
-        }
+      const resLista = await axios.post('https://app.omie.com.br/api/v1/financas/contareceber/', pacoteListar);
+      const titulos = resLista.data.conta_receber_cadastro;
 
-        const contasDoPedido = contas.filter(conta => conta.nCodPedido === Number(numero_pedido_omie));
+      // ==========================================
+      // PASSO 2: Isolar o Título Exato do Pedido Atual
+      // ==========================================
 
-        if (contasDoPedido.length === 0) {
-            return res.status(404).json({ 
-                mensagem: "A cobrança específica deste pedido ainda está na fila de geração do banco. Tente novamente em 1 minuto." 
-            });
-        }
+      const titulosCorretos = titulos.filter(titulo => titulo.nCodPedido === numero_pedido_omie);
 
-        const cobrancasGeradas = contasDoPedido.map(conta => {
-            let tipo_pagamento = "Indefinido";
-            if (conta.pix_copia_e_cola) tipo_pagamento = "Pix";
-            else if (conta.link_boleto) tipo_pagamento = "Boleto";
-
-            return {
-                parcela: conta.numero_parcela,
-                valor: conta.valor_documento,
-                vencimento: conta.data_vencimento,
-                tipo_cobranca: tipo_pagamento,
-                pix_copia_e_cola: conta.pix_copia_e_cola || "Pix não gerado",
-                link_boleto: conta.link_boleto || "Boleto não gerado"
-            };
+      if (titulosCorretos.length === 0) {
+        return res.status(404).json({
+          sucesso: false,
+          erro: "Nenhum título financeiro encontrado para este pedido."
         });
+      }
 
-        return res.json({
-            sucesso: true,
-            pedido_encontrado: numero_pedido_omie,
-            quantidade_parcelas: cobrancasGeradas.length,
-            cobrancas: cobrancasGeradas
-        });
+      const boletosGerados = await Promise.all(titulosCorretos.map(async (titulo) => {
+        try {
+          const respostaBoleto = await axios.post("https://app.omie.com.br/api/v1/financas/contareceberboleto/", {
+            call: "GerarBoleto", 
+            app_key: process.env.OMIE_APP_KEY,
+            app_secret: process.env.OMIE_APP_SECRET,
+            param: [
+                {
+                    nCodTitulo: titulo.nCodTitulo 
+                }
+            ]
+          });
+
+          // Monta o "pacotinho" de informações desta parcela específica
+          return {
+            parcela: titulo.numero_parcela,
+            vencimento: titulo.data_vencimento,
+            valor: titulo.valor_documento,
+            link_pagamento: respostaBoleto.data.cLinkBoleto
+          };
+          
+        } catch (erroBoleto) {
+          console.error(`Erro ao gerar boleto da parcela ${titulo.numero_parcela}:`, erroBoleto.message);
+          // Se der erro só no banco, devolve o aviso mas não quebra as outras parcelas
+          return {
+            parcela: titulo.numero_parcela,
+            vencimento: titulo.data_vencimento,
+            valor: titulo.valor_documento,
+            link_pagamento: "Erro na emissão bancária. Verifique o cadastro na Omie."
+          };
+        }
+      }
+    ));
 
     } catch (error) {
-        console.error("Erro ao buscar cobrança na Omie:", error.response?.data || error.message);
-        return res.status(500).json({ erro: "Falha ao buscar a cobrança." });
+      console.error("❌ Erro no fluxo financeiro:", error.response?.data || error.message);
+      return res.status(500).json({
+        sucesso: false,
+        erro: "Falha ao processar o link de pagamento."
+      });
     }
 });
 

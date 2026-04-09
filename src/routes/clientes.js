@@ -9,6 +9,8 @@ router.post('/consultar-cliente', async (req, res) => {
     return res.status(400).json({ erro: 'Você esqueceu de mandar o CPF!' });
   }
 
+  const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, '');
+
   try {
    const respostaOmie = await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', {
       call: 'ListarClientes',
@@ -19,7 +21,7 @@ router.post('/consultar-cliente', async (req, res) => {
           pagina: 1,
           registros_por_pagina: 10,
           clientesFiltro: {
-            cnpj_cpf: cnpj_cpf
+            cnpj_cpf: cnpj_cpfLimpo
           }
         }
       ] 
