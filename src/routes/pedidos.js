@@ -43,10 +43,16 @@ router.post('/criar-pedido', async (req, res) => {
       const clienteEncontrado = respostaCpf.data.clientes_cadastro[0];
       codigo_cliente = clienteEncontrado.codigo_cliente_omie;
     } else {
-      return res.json({
-        cadastrado: false,
-        mensagem: "Cliente não encontrado na base de dados"
-      })
+        return res.json({
+          cadastrado: false,
+          mensagem: "Cliente não encontrado na base de dados"
+        })
+    }
+
+    let link_pagamento = ''
+
+    if (forma_pagamento == "credito"){
+      link_pagamento = await pagamentoCredito(produtos);
     }
 
     const detalhesPedido = produtos.map((produto, index) => {
@@ -103,13 +109,24 @@ router.post('/criar-pedido', async (req, res) => {
     const numeroPedido = respostaOmie.data.numero_pedido;
     console.log(`✅ Pedido Criado com Sucesso! Número: ${numeroPedido} e codigo: ${respostaOmie.data.codigo_pedido}`);
 
-    return res.json({
-      sucesso: true,
-      numero_pedido_omie: respostaOmie.data.codigo_pedido,
-      codigo_cliente_omie: codigo_cliente,
-      forma_pagamento_escolhida: forma_pagamento,
-      mensagem: `Pedido gerado com sucesso! O número do pedido é ${numeroPedido}.`
-    });
+    if (forma_pagamento == "credito") {
+      return res.json({
+        sucesso: true,
+        numero_pedido_omie: respostaOmie.data.codigo_pedido,
+        codigo_cliente_omie: codigo_cliente,
+        forma_pagamento_escolhida: forma_pagamento,
+        link_pagamento: link_pagamento,
+        mensagem: `Pedido gerado com sucesso! O número do pedido é ${numeroPedido}. Link para pagamento credito: ${link_pagamento}`
+      });
+    } else if (link_pagamento == '') {
+      return res.json({
+        sucesso: true,
+        numero_pedido_omie: respostaOmie.data.codigo_pedido,
+        codigo_cliente_omie: codigo_cliente,
+        forma_pagamento_escolhida: forma_pagamento,
+        mensagem: `Pedido gerado com sucesso! O número do pedido é ${numeroPedido}.`
+      });
+    } 
 
 } catch (error) {
   console.error("⛔ ERRO AO CRIAR PEDIDO:", error.response?.data || error.message);
@@ -121,85 +138,91 @@ router.post('/criar-pedido', async (req, res) => {
 });
 
 // ROTA 2: CONSULTAR BOLETOS/PIX PELO NÚMERO DO PEDIDO
-router.post('/consultar-cobranca', async (req, res) => {
-    try {
-      const { cnpj_cpf, numero_pedido_omie } = req.body; 
-      console.log("👀 DADOS QUE CHEGARAM DA IA:", req.body);
+router.post('/gerar-cobranca', async (req, res) => {
+  try {
+    const { cnpj_cpf, numero_pedido_omie } = req.body; 
+    console.log("👀 DADOS QUE CHEGARAM DA IA:", req.body);
 
-      const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, '');
+    const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, '');
 
-      // ==========================================
-      // PASSO 1: Buscar os Títulos Financeiros do Cliente
-      // ==========================================
+    // ==========================================
+    // PASSO 1: Buscar os Títulos Financeiros do Cliente
+    // ==========================================
 
-      const pacoteListar = {
-        call: "ListarContasReceber",
-        app_key: process.env.OMIE_APP_KEY,
-        app_secret: process.env.OMIE_APP_SECRET,
-        param: [{
-          pagina: 1,
-          registros_por_pagina: 50,
-          filtrar_por_cpf_cnpj: cnpj_cpfLimpo // Filtra pelo CPF para a busca ser super rápida
-        }]
-      };
+    const pacoteListar = {
+      call: "ListarContasReceber",
+      app_key: process.env.OMIE_APP_KEY,
+      app_secret: process.env.OMIE_APP_SECRET,
+      param: [{
+        pagina: 1,
+        registros_por_pagina: 50,
+        filtrar_por_cpf_cnpj: cnpj_cpfLimpo // Filtra pelo CPF para a busca ser super rápida
+      }]
+    };
 
-      const resLista = await axios.post('https://app.omie.com.br/api/v1/financas/contareceber/', pacoteListar);
-      const titulos = resLista.data.conta_receber_cadastro;
+    const resLista = await axios.post('https://app.omie.com.br/api/v1/financas/contareceber/', pacoteListar);
+    const titulos = resLista.data.conta_receber_cadastro || [];
 
-      // ==========================================
-      // PASSO 2: Isolar o Título Exato do Pedido Atual
-      // ==========================================
+    // ==========================================
+    // PASSO 2: Isolar o Título Exato do Pedido Atual
+    // ==========================================
 
-      const titulosCorretos = titulos.filter(titulo => titulo.nCodPedido === numero_pedido_omie);
+    const titulosCorretos = titulos.filter(titulo => titulo.nCodPedido == numero_pedido_omie);
 
-      if (titulosCorretos.length === 0) {
-        return res.status(404).json({
-          sucesso: false,
-          erro: "Nenhum título financeiro encontrado para este pedido."
-        });
-      }
-
-      const boletosGerados = await Promise.all(titulosCorretos.map(async (titulo) => {
-        try {
-          const respostaBoleto = await axios.post("https://app.omie.com.br/api/v1/financas/contareceberboleto/", {
-            call: "GerarBoleto", 
-            app_key: process.env.OMIE_APP_KEY,
-            app_secret: process.env.OMIE_APP_SECRET,
-            param: [
-                {
-                    nCodTitulo: titulo.nCodTitulo 
-                }
-            ]
-          });
-
-          // Monta o "pacotinho" de informações desta parcela específica
-          return {
-            parcela: titulo.numero_parcela,
-            vencimento: titulo.data_vencimento,
-            valor: titulo.valor_documento,
-            link_pagamento: respostaBoleto.data.cLinkBoleto
-          };
-          
-        } catch (erroBoleto) {
-          console.error(`Erro ao gerar boleto da parcela ${titulo.numero_parcela}:`, erroBoleto.message);
-          // Se der erro só no banco, devolve o aviso mas não quebra as outras parcelas
-          return {
-            parcela: titulo.numero_parcela,
-            vencimento: titulo.data_vencimento,
-            valor: titulo.valor_documento,
-            link_pagamento: "Erro na emissão bancária. Verifique o cadastro na Omie."
-          };
-        }
-      }
-    ));
-
-    } catch (error) {
-      console.error("❌ Erro no fluxo financeiro:", error.response?.data || error.message);
-      return res.status(500).json({
+    if (titulosCorretos.length === 0) {
+      return res.status(404).json({
         sucesso: false,
-        erro: "Falha ao processar o link de pagamento."
+        erro: "Nenhum título financeiro encontrado para este pedido."
       });
     }
+
+    const boletosGerados = await Promise.all(titulosCorretos.map(async (titulo) => {
+      try {
+        const respostaBoleto = await axios.post("https://app.omie.com.br/api/v1/financas/contareceberboleto/", {
+          call: "GerarBoleto", 
+          app_key: process.env.OMIE_APP_KEY,
+          app_secret: process.env.OMIE_APP_SECRET,
+          param: [
+              {
+                  nCodTitulo: titulo.nCodTitulo 
+              }
+          ]
+        });
+
+        // Monta o "pacotinho" de informações desta parcela específica
+        return {
+          parcela: titulo.numero_parcela,
+          vencimento: titulo.data_vencimento,
+          valor: titulo.valor_documento,
+          link_pagamento: respostaBoleto.data.cLinkBoleto
+        };
+        
+      } catch (erroBoleto) {
+        console.error(`Erro ao gerar boleto da parcela ${titulo.numero_parcela}:`, erroBoleto.message);
+        // Se der erro só no banco, devolve o aviso mas não quebra as outras parcelas
+        return {
+          parcela: titulo.numero_parcela,
+          vencimento: titulo.data_vencimento,
+          valor: titulo.valor_documento,
+          link_pagamento: "Erro na emissão bancária. Verifique o cadastro na Omie."
+        };
+      }
+    }
+  ));
+
+  return res.json({
+    sucesso: true,
+    quantidade_parcelas: boletosGerados.length,
+    dados: boletosGerados
+  })
+
+  } catch (error) {
+    console.error("❌ Erro no fluxo financeiro:", error.response?.data || error.message);
+    return res.status(500).json({
+      sucesso: false,
+      erro: "Falha ao processar o link de pagamento."
+    });
+  }
 });
 
 router.post('/consultar-pedido', async (req, res) => {
@@ -247,22 +270,22 @@ function construirParcelas(valorTotal, forma_pagamento) {
     let n_parcela_omie = 0;
     let prazos = [];
 
-    if (forma_pagamento === "30_45_60") {
+    if (forma_pagamento === "20_40_60") {
         codigo_parcela_omie = "S23"; // Substitua pelo código real do 30/45/60 na sua Omie
         meio_pag_omie = 15; // BO = Boleto
         n_parcela_omie = 3;
-        prazos = [30, 45, 60];
-    } else if (forma_pagamento === "20_40") {
-        codigo_parcela_omie = "S66"; // Substitua pelo código real de à vista na sua Omie
-        meio_pag_omie = 15; // PX = Pix
-        n_parcela_omie = 2;
-        prazos = [20, 40];
+        prazos = [20, 40, 60];
     } else if (forma_pagamento === "pix_a_vista") {
         codigo_parcela_omie = "000"; // Substitua pelo código real de à vista na sua Omie
         meio_pag_omie = 17; // PX = Pix
         n_parcela_omie = 1;
         prazos = [0];
     } else if (forma_pagamento === "boleto_a_vista") {
+        codigo_parcela_omie = "000"; 
+        meio_pag_omie = 15;
+        n_parcela_omie = 1;
+        prazos = [0];
+    } else if (forma_pagamento === "credito") {
         codigo_parcela_omie = "000"; 
         meio_pag_omie = 15;
         n_parcela_omie = 1;
@@ -316,6 +339,47 @@ function construirParcelas(valorTotal, forma_pagamento) {
         meio_pag_omie,
         listaDeParcelas: parcelasGeradas
     };
+}
+
+async function pagamentoCredito(produtos) {
+
+  const detalhes_pedido = produtos.map((produto) => {
+    return {
+      description: produto.descricao,
+      price: produto.valor_unitario,
+      quantity: produto.quantidade * 100
+    }
+
+  });
+
+  const dados_pedido = {
+    handle: 'yepisprodutos',
+    order_nsu: 'PEDIDO-' + Date.now().toString(),
+    items: detalhes_pedido
+  }
+
+  try {
+    const respostaInfinite = await axios.post('https://api.infinitepay.io/invoices/public/checkout/links', dados_pedido)
+    
+    const link_pagamento = respostaInfinite.data.url;
+
+    console.log("Link gerado com sucesso: ", link_pagamento);
+
+    return link_pagamento
+  
+  } catch(erro) {
+    console.error('Falha ao gerar link infinitepay');
+
+    if (erro.response) {
+      console.error('Status: ', erro.response.status);
+      console.error('Detalhes: ', erro.response.data);
+    } else if ( erro.request) {
+      console.error('Sem resposta do servidor: ', erro.response.request);
+    } else {
+      console.error('Erro: ', erro.message);
+    }
+  }
+
 }
 
 module.exports = router;
