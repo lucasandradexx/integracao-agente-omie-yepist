@@ -161,7 +161,7 @@ router.post('/gerar-cobranca-credito', async (req, res) => {
     if (linkPagamento == "a") {
       return res.json({
         sucesso: true,
-        detalhes: "Não era credito, portanto nao gerou link"
+        detalhes: "Seu pedido foi feito em boleto ou pix, entraremos em contato quando for emitido o modo de pagar"
       })
     } else {
       return res.json({
@@ -227,12 +227,12 @@ function construirParcelas(valorTotal, forma_pagamento) {
     let prazos = [];
 
     if (forma_pagamento === "20_40_60") {
-        codigo_parcela_omie = "T18"; // Substitua pelo código real do 30/45/60 na sua Omie
+        codigo_parcela_omie = "T18"; 
         meio_pag_omie = "15"; // 15 = Boleto
         n_parcela_omie = 3;
         prazos = [20, 40, 60];
     } else if (forma_pagamento === "pix_a_vista") {
-        codigo_parcela_omie = "000"; // Substitua pelo código real de à vista na sua Omie
+        codigo_parcela_omie = "000"; 
         meio_pag_omie = "17"; // 17 = Pix
         n_parcela_omie = 1;
         prazos = [0];
