@@ -49,12 +49,6 @@ router.post('/criar-pedido', async (req, res) => {
         })
     }
 
-    let link_pagamento = ''
-
-    if (forma_pagamento == "credito"){
-      link_pagamento = await pagamentoCredito(produtos);
-    }
-
     const detalhesPedido = produtos.map((produto, index) => {
       return {
         "ide": {
@@ -109,24 +103,12 @@ router.post('/criar-pedido', async (req, res) => {
     const numeroPedido = respostaOmie.data.numero_pedido;
     console.log(`✅ Pedido Criado com Sucesso! Número: ${numeroPedido} e codigo: ${respostaOmie.data.codigo_pedido}`);
 
-    if (forma_pagamento == "credito") {
-      return res.json({
-        sucesso: true,
-        numero_pedido_omie: respostaOmie.data.codigo_pedido,
-        codigo_cliente_omie: codigo_cliente,
-        forma_pagamento_escolhida: forma_pagamento,
-        link_pagamento: link_pagamento,
-        mensagem: `Pedido gerado com sucesso! O número do pedido é ${numeroPedido}. Link para pagamento credito: ${link_pagamento}`
-      });
-    } else if (link_pagamento == '') {
-      return res.json({
-        sucesso: true,
-        numero_pedido_omie: respostaOmie.data.codigo_pedido,
-        codigo_cliente_omie: codigo_cliente,
-        forma_pagamento_escolhida: forma_pagamento,
-        mensagem: `Pedido gerado com sucesso! O número do pedido é ${numeroPedido}.`
-      });
-    } 
+    return res.json({
+      sucesso: true,
+      numero_pedido_omie: respostaOmie.data.codigo_pedido,
+      forma_pagamento_escolhida: forma_pagamento,
+      mensagem: `Pedido gerado com sucesso! O número do pedido é ${numeroPedido}.`
+    });
 
 } catch (error) {
   console.error("⛔ ERRO AO CRIAR PEDIDO:", error.response?.data || error.message);
@@ -137,84 +119,58 @@ router.post('/criar-pedido', async (req, res) => {
 }
 });
 
-// ROTA 2: CONSULTAR BOLETOS/PIX PELO NÚMERO DO PEDIDO
-router.post('/gerar-cobranca', async (req, res) => {
+// ROTA 2: GERAR LINK PELO NÚMERO DO PEDIDO
+router.post('/gerar-cobranca-credito', async (req, res) => {
   try {
-    const { cnpj_cpf, numero_pedido_omie } = req.body; 
+    const { numero_pedido_omie } = req.body; 
     console.log("👀 DADOS QUE CHEGARAM DA IA:", req.body);
 
-    const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, '');
-
-    // ==========================================
-    // PASSO 1: Buscar os Títulos Financeiros do Cliente
-    // ==========================================
-
-    const pacoteListar = {
-      call: "ListarContasReceber",
-      app_key: process.env.OMIE_APP_KEY,
-      app_secret: process.env.OMIE_APP_SECRET,
-      param: [{
-        pagina: 1,
-        registros_por_pagina: 50,
-        filtrar_por_cpf_cnpj: cnpj_cpfLimpo // Filtra pelo CPF para a busca ser super rápida
-      }]
-    };
-
-    const resLista = await axios.post('https://app.omie.com.br/api/v1/financas/contareceber/', pacoteListar);
-    const titulos = resLista.data.conta_receber_cadastro || [];
-
-    // ==========================================
-    // PASSO 2: Isolar o Título Exato do Pedido Atual
-    // ==========================================
-
-    const titulosCorretos = titulos.filter(titulo => titulo.nCodPedido == numero_pedido_omie);
-
-    if (titulosCorretos.length === 0) {
-      return res.status(404).json({
-        sucesso: false,
-        erro: "Nenhum título financeiro encontrado para este pedido."
+    if (!numero_pedido_omie) {
+      return res.status(400).json({ 
+        erro: "Não consegui identificar o número do pedido para gerar o link." 
       });
     }
 
-    const boletosGerados = await Promise.all(titulosCorretos.map(async (titulo) => {
-      try {
-        const respostaBoleto = await axios.post("https://app.omie.com.br/api/v1/financas/contareceberboleto/", {
-          call: "GerarBoleto", 
-          app_key: process.env.OMIE_APP_KEY,
-          app_secret: process.env.OMIE_APP_SECRET,
-          param: [
-              {
-                  nCodTitulo: titulo.nCodTitulo 
-              }
-          ]
-        });
+    const pacoteConsulta = {
+      "call": "ConsultarPedido",
+      "app_key": process.env.OMIE_APP_KEY,
+      "app_secret": process.env.OMIE_APP_SECRET,
+      "param": [{
+        "codigo_pedido": numero_pedido_omie
+      }]
+    };
 
-        // Monta o "pacotinho" de informações desta parcela específica
-        return {
-          parcela: titulo.numero_parcela,
-          vencimento: titulo.data_vencimento,
-          valor: titulo.valor_documento,
-          link_pagamento: respostaBoleto.data.cLinkBoleto
-        };
-        
-      } catch (erroBoleto) {
-        console.error(`Erro ao gerar boleto da parcela ${titulo.numero_parcela}:`, erroBoleto.message);
-        // Se der erro só no banco, devolve o aviso mas não quebra as outras parcelas
-        return {
-          parcela: titulo.numero_parcela,
-          vencimento: titulo.data_vencimento,
-          valor: titulo.valor_documento,
-          link_pagamento: "Erro na emissão bancária. Verifique o cadastro na Omie."
-        };
+    const repostaPedido = await axios.post('https://app.omie.com.br/api/v1/produtos/pedido/', pacoteConsulta);
+
+    const produtos = repostaPedido.data.pedido_venda_produto.det.map(item => {
+      return {
+        "descricao": item.produto.descricao,
+        "codigo_produto": item.produto.codigo_produto,
+        "quantidade": item.produto.quantidade,
+        "valor_unitario": item.produto.valor_unitario
       }
-    }
-  ));
+    });
 
-  return res.json({
-    sucesso: true,
-    quantidade_parcelas: boletosGerados.length,
-    dados: boletosGerados
-  })
+    const metodo_pagmento = repostaPedido.data.pedido_venda_produto.lista_parcelas.parcela[0].meio_pagamento;
+    let linkPagamento = "a";
+
+    if (metodo_pagmento == "03") {
+      linkPagamento = await pagamentoCredito(produtos);
+    }
+
+    if (linkPagamento == "a") {
+      return res.json({
+        sucesso: true,
+        detalhes: "Não era credito, portanto nao gerou link"
+      })
+    } else {
+      return res.json({
+        sucesso: true,
+        detalhes: "Link de pagamento gerado com sucesso, você tem 24hrs para realizar o pagamento",
+        link: linkPagamento,
+        pag: metodo_pagmento
+      });
+    }
 
   } catch (error) {
     console.error("❌ Erro no fluxo financeiro:", error.response?.data || error.message);
@@ -246,7 +202,7 @@ router.post('/consultar-pedido', async (req, res) => {
     };
 
     const response = await axios.post('https://app.omie.com.br/api/v1/produtos/pedido/', pacoteConsulta);
-    const pedido = response.data;
+    const pedido = response.data.pedido_venda_produto;
       return res.json({
         sucesso: true,
         Dados: pedido
@@ -271,28 +227,28 @@ function construirParcelas(valorTotal, forma_pagamento) {
     let prazos = [];
 
     if (forma_pagamento === "20_40_60") {
-        codigo_parcela_omie = "S23"; // Substitua pelo código real do 30/45/60 na sua Omie
-        meio_pag_omie = 15; // BO = Boleto
+        codigo_parcela_omie = "T18"; // Substitua pelo código real do 30/45/60 na sua Omie
+        meio_pag_omie = "15"; // 15 = Boleto
         n_parcela_omie = 3;
         prazos = [20, 40, 60];
     } else if (forma_pagamento === "pix_a_vista") {
         codigo_parcela_omie = "000"; // Substitua pelo código real de à vista na sua Omie
-        meio_pag_omie = 17; // PX = Pix
+        meio_pag_omie = "17"; // 17 = Pix
         n_parcela_omie = 1;
         prazos = [0];
     } else if (forma_pagamento === "boleto_a_vista") {
         codigo_parcela_omie = "000"; 
-        meio_pag_omie = 15;
+        meio_pag_omie = "15";
         n_parcela_omie = 1;
         prazos = [0];
     } else if (forma_pagamento === "credito") {
         codigo_parcela_omie = "000"; 
-        meio_pag_omie = 15;
+        meio_pag_omie = "03"; // 03 = Credito
         n_parcela_omie = 1;
         prazos = [0];
     } else {
         codigo_parcela_omie = "999"; // Código padrão caso venha vazio
-        meio_pag_omie = 99; // Outros
+        meio_pag_omie = "99"; // Outros
     }
 
     let parcelasGeradas = [];
@@ -346,8 +302,8 @@ async function pagamentoCredito(produtos) {
   const detalhes_pedido = produtos.map((produto) => {
     return {
       description: produto.descricao,
-      price: produto.valor_unitario,
-      quantity: produto.quantidade * 100
+      price: produto.valor_unitario * 100,
+      quantity: produto.quantidade
     }
 
   });
