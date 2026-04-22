@@ -5,22 +5,71 @@ const router = express.Router();
 //ROTA 1: CRIAR PEDIDO
 router.post('/criar-pedido', async (req, res) => {
   try {
-    const { cnpj_cpf, produtos, forma_pagamento } = req.body;
+    const { cnpj_cpf, produtos, forma_pagamento, revendedor } = req.body;
 
     console.log("👀 DADOS QUE CHEGARAM DA IA:", req.body);
 
-    if (!cnpj_cpf) {
-     return res.status(400).json({ erro: 'Você esqueceu de mandar o CPF!' });
+    if (!cnpj_cpf || !produtos || !forma_pagamento || !revendedor) {
+     return res.status(400).json({ erro: 'Você esqueceu de mandar algum dado ou todos' });
+    }
+
+    let cons_fin = ""
+
+    if (revendedor == "S") {
+      cons_fin = "N";
+    } else if (revendedor == "N") {
+      cons_fin = "S";
+    } else {
+      return res.status(400).json({ erro: 'Você mandou uma entrada invalida, envie apenas "S" ou "N"' });
     }
     
     const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, '');
 
     let valorTotalPedido = 0;
+    let quantidadeTotalPedido = 0;
     req.body.produtos.forEach(produto => {
         valorTotalPedido += (Number(produto.quantidade) * Number(produto.valor_unitario));
+        quantidadeTotalPedido += Number(produto.quantidade);
     });
 
-    const dadosFinanceiros = construirParcelas(valorTotalPedido, forma_pagamento);
+    
+
+    // REGRAS DE NEGÓCIO E DESCONTOS:
+    let desconto = 0;
+    let valor_desconto = 0;
+
+    if (quantidadeTotalPedido < 6 && cons_fin == "S") {
+      return res.json({
+        sucesso: false,
+        mensagem: `Pedido deve ter no minimo 6 itens para consumidores finais (Clientes basicos), porem só tem: ${quantidadeTotalPedido}`
+      });
+    } 
+    
+    if (cons_fin == "S") {
+      valorTotalPedido = valorTotalPedido + (valorTotalPedido * 65/100);
+    }
+
+    if (valorTotalPedido < 600 && cons_fin == "N") {
+      return res.json({
+        sucesso: false,
+        mensagem: `Pedido deve ter no minimo 600 reais em produtos para consumidores não finais (Revendedores), porem só tem: R$ ${valorTotalPedido}`
+      });
+    }
+    
+    if (cons_fin == "N") {
+      if (quantidadeTotalPedido >= 60) {
+        desconto = (8/100);
+        valor_desconto = valorTotalPedido*desconto
+      } else if (quantidadeTotalPedido >= 30) {
+        desconto = (5/100);
+        valor_desconto = valorTotalPedido*desconto
+      }
+    }
+
+    console.log("Desconto e valor do desconto: ", desconto, " e ", valor_desconto)
+    // FIM DAS REGRAS DE NEGÓCIO E DESCONTOS
+
+    const dadosFinanceiros = construirParcelas(valorTotalPedido, forma_pagamento, cons_fin, desconto);
 
     const respostaCpf = await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', {
       call: 'ListarClientes',
@@ -81,13 +130,15 @@ router.post('/criar-pedido', async (req, res) => {
             "quantidade_itens": detalhesPedido.length,
             "etapa": "10",
             "codigo_parcela": dadosFinanceiros.codigo_parcela_omie,
-            "origem_pedido": "API"
+            "origem_pedido": "API",
+            "tipo_desconto_pedido": "V",
+            "valor_desconto_pedido": valor_desconto
           },
           "det": detalhesPedido,
           "informacoes_adicionais": {
             "codigo_categoria": "1.01.95", // Categoria padrão de Venda de Produtos
             "codigo_conta_corrente": "3152079535", // ⚠️ Pode ser que a Omie exija o ID real da sua conta
-            "consumidor_final": "S",
+            "consumidor_final": cons_fin,
             "meio_pagamento": dadosFinanceiros.meio_pag_omie
           },
           "lista_parcelas": {
@@ -142,6 +193,7 @@ router.post('/gerar-cobranca-credito', async (req, res) => {
 
     const repostaPedido = await axios.post('https://app.omie.com.br/api/v1/produtos/pedido/', pacoteConsulta);
 
+    const valorFinal = (repostaPedido.data.pedido_venda_produto.total_pedido.valor_total_pedido)*100
     const produtos = repostaPedido.data.pedido_venda_produto.det.map(item => {
       return {
         "descricao": item.produto.descricao,
@@ -155,7 +207,7 @@ router.post('/gerar-cobranca-credito', async (req, res) => {
     let linkPagamento = "a";
 
     if (metodo_pagmento == "03") {
-      linkPagamento = await pagamentoCredito(produtos);
+      linkPagamento = await pagamentoCredito(produtos, valorFinal);
     }
 
     if (linkPagamento == "a") {
@@ -220,13 +272,13 @@ router.post('/consultar-pedido', async (req, res) => {
 
 });
 
-function construirParcelas(valorTotal, forma_pagamento) {
+function construirParcelas(valorTotal, forma_pagamento, cons_fin, desconto) {
     let codigo_parcela_omie = "";
     let meio_pag_omie = "";
     let n_parcela_omie = 0;
     let prazos = [];
 
-    if (forma_pagamento === "20_40_60") {
+    if (forma_pagamento === "20_40_60" && cons_fin == "N" && valorTotal >= 1000) {
         codigo_parcela_omie = "T18"; 
         meio_pag_omie = "15"; // 15 = Boleto
         n_parcela_omie = 3;
@@ -251,10 +303,12 @@ function construirParcelas(valorTotal, forma_pagamento) {
         meio_pag_omie = "99"; // Outros
     }
 
+    const valorTotalFinal = valorTotal + (valorTotal * desconto);
+
     let parcelasGeradas = [];
     
     // Arredonda para baixo para evitar dízimas (ex: 100 / 3 = 33.33)
-    let valorPorParcela = Math.floor((valorTotal / n_parcela_omie) * 100) / 100;
+    let valorPorParcela = Math.floor((valorTotalFinal / n_parcela_omie) * 100) / 100;
     let percentualPorParcela = Math.floor((100 / n_parcela_omie) * 100) / 100;
 
     let somaValores = 0;
@@ -274,7 +328,7 @@ function construirParcelas(valorTotal, forma_pagamento) {
 
         // Se for a última parcela, joga a diferença de centavos nela para fechar 100% cravado
         if (index === n_parcela_omie - 1) {
-            valorAtual = Number((valorTotal - somaValores).toFixed(2));
+            valorAtual = Number((valorTotalFinal - somaValores).toFixed(2));
             percentualAtual = Number((100 - somaPercentuais).toFixed(2));
         } else {
             somaValores += valorAtual;
