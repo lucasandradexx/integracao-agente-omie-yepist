@@ -5,26 +5,26 @@ const router = express.Router();
 //ROTA 1: CRIAR PEDIDO
 router.post('/criar-pedido', async (req, res) => {
   try {
-    const { cnpj_cpf, produtos, forma_pagamento, revendedor } = req.body;
+    const { cnpj_cpf, produtos, forma_pagamento} = req.body;
 
     console.log("👀 DADOS QUE CHEGARAM DA IA:", req.body);
 
-    if (!cnpj_cpf || !produtos || !forma_pagamento || !revendedor) {
+    if (!cnpj_cpf || !produtos || !forma_pagamento) {
      return res.status(400).json({ erro: 'Você esqueceu de mandar algum dado ou todos' });
     }
 
-    let cons_fin = ""
-
-    if (revendedor == "S") {
-      cons_fin = "N";
-    } else if (revendedor == "N") {
-      cons_fin = "S";
-    } else {
-      return res.status(400).json({ erro: 'Você mandou uma entrada invalida, envie apenas "S" ou "N"' });
-    }
-    
     const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, '');
 
+    let consumidor_final = "-";
+
+    if (cnpj_cpfLimpo.length == 11) {
+      consumidor_final = "S";
+    } else if (cnpj_cpfLimpo.length == 14) {
+      consumidor_final = "N";
+    } else {
+      return "erro"
+    }
+    
     let valorTotalPedido = 0;
     let quantidadeTotalPedido = 0;
     req.body.produtos.forEach(produto => {
@@ -32,44 +32,9 @@ router.post('/criar-pedido', async (req, res) => {
         quantidadeTotalPedido += Number(produto.quantidade);
     });
 
-    
+    verificarDescontos()
 
-    // REGRAS DE NEGÓCIO E DESCONTOS:
-    let desconto = 0;
-    let valor_desconto = 0;
-
-    if (quantidadeTotalPedido < 6 && cons_fin == "S") {
-      return res.json({
-        sucesso: false,
-        mensagem: `Pedido deve ter no minimo 6 itens para consumidores finais (Clientes basicos), porem só tem: ${quantidadeTotalPedido}`
-      });
-    } 
-    
-    if (cons_fin == "S") {
-      valorTotalPedido = valorTotalPedido + (valorTotalPedido * 65/100);
-    }
-
-    if (valorTotalPedido < 600 && cons_fin == "N") {
-      return res.json({
-        sucesso: false,
-        mensagem: `Pedido deve ter no minimo 600 reais em produtos para consumidores não finais (Revendedores), porem só tem: R$ ${valorTotalPedido}`
-      });
-    }
-    
-    if (cons_fin == "N") {
-      if (quantidadeTotalPedido >= 60) {
-        desconto = (8/100);
-        valor_desconto = valorTotalPedido*desconto
-      } else if (quantidadeTotalPedido >= 30) {
-        desconto = (5/100);
-        valor_desconto = valorTotalPedido*desconto
-      }
-    }
-
-    console.log("Desconto e valor do desconto: ", desconto, " e ", valor_desconto)
-    // FIM DAS REGRAS DE NEGÓCIO E DESCONTOS
-
-    const dadosFinanceiros = construirParcelas(valorTotalPedido, forma_pagamento, cons_fin, desconto);
+    const dadosFinanceiros = construirParcelas(valorTotalPedido, forma_pagamento, consumidor_final, desconto);
 
     const respostaCpf = await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', {
       call: 'ListarClientes',
@@ -138,7 +103,7 @@ router.post('/criar-pedido', async (req, res) => {
           "informacoes_adicionais": {
             "codigo_categoria": "1.01.95", // Categoria padrão de Venda de Produtos
             "codigo_conta_corrente": "3152079535", // ⚠️ Pode ser que a Omie exija o ID real da sua conta
-            "consumidor_final": cons_fin,
+            "consumidor_final": consumidor_final,
             "meio_pagamento": dadosFinanceiros.meio_pag_omie
           },
           "lista_parcelas": {
@@ -193,7 +158,8 @@ router.post('/gerar-cobranca-credito', async (req, res) => {
 
     const repostaPedido = await axios.post('https://app.omie.com.br/api/v1/produtos/pedido/', pacoteConsulta);
 
-    const valorFinal = (repostaPedido.data.pedido_venda_produto.total_pedido.valor_total_pedido)*100
+    const valorDesconto = (repostaPedido.data.pedido_venda_produto.total_pedido.valor_descontos)
+    const valorMerc = (repostaPedido.data.pedido_venda_produto.total_pedido.valor_mercadorias)
     const produtos = repostaPedido.data.pedido_venda_produto.det.map(item => {
       return {
         "descricao": item.produto.descricao,
@@ -207,7 +173,7 @@ router.post('/gerar-cobranca-credito', async (req, res) => {
     let linkPagamento = "a";
 
     if (metodo_pagmento == "03") {
-      linkPagamento = await pagamentoCredito(produtos, valorFinal);
+      linkPagamento = await pagamentoCredito(produtos, valorMerc, valorDesconto);
     }
 
     if (linkPagamento == "a") {
@@ -272,13 +238,13 @@ router.post('/consultar-pedido', async (req, res) => {
 
 });
 
-function construirParcelas(valorTotal, forma_pagamento, cons_fin, desconto) {
+function construirParcelas(valorTotal, forma_pagamento, consumidor_final, desconto) {
     let codigo_parcela_omie = "";
     let meio_pag_omie = "";
     let n_parcela_omie = 0;
     let prazos = [];
 
-    if (forma_pagamento === "20_40_60" && cons_fin == "N" && valorTotal >= 1000) {
+    if (forma_pagamento === "20_40_60" && consumidor_final == "N" && valorTotal >= 1000) {
         codigo_parcela_omie = "T18"; 
         meio_pag_omie = "15"; // 15 = Boleto
         n_parcela_omie = 3;
@@ -351,16 +317,30 @@ function construirParcelas(valorTotal, forma_pagamento, cons_fin, desconto) {
     };
 }
 
-async function pagamentoCredito(produtos) {
+async function pagamentoCredito(produtos, valorMerc, valorDesconto) {
+
+  console.log("Mercadoria e desconto: ", valorMerc, " e ", valorDesconto)
+
+  const desconto = parseFloat((valorDesconto/valorMerc).toFixed(2))
+
+  console.log(desconto)
 
   const detalhes_pedido = produtos.map((produto) => {
+
+    const produto_desconto = parseFloat((produto.valor_unitario - (produto.valor_unitario*desconto)).toFixed(2));
+    console.log(produto_desconto)
+
     return {
       description: produto.descricao,
-      price: produto.valor_unitario * 100,
+      price: Math.round(produto_desconto * 100),
       quantity: produto.quantidade
     }
 
   });
+
+  
+
+  console.log("Detalhes: ", detalhes_pedido)
 
   const dados_pedido = {
     handle: 'yepisprodutos',
@@ -392,4 +372,59 @@ async function pagamentoCredito(produtos) {
 
 }
 
+async function verificacaoClienteEstado(cnpj_cpf) {
+
+  const respostaOmie = await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', {
+    call: 'ListarClientes',
+    app_key: process.env.OMIE_APP_KEY,
+    app_secret: process.env.OMIE_APP_SECRET,
+    param: [
+      {     
+        pagina: 1,
+        registros_por_pagina: 1,
+        apenas_importado_api: "N",
+        clientesFiltro: {
+          cnpj_cpf: cnpj_cpf
+        }
+      }
+    ]
+  });
+
+  return respostaOmie.data.clientes_cadastro[0].estado
+
+}
+
+async function verificarDescontos(cnpj_cpf, consumidor_final, valorTotalPedido, quantidadeTotalPedido) {
+  let desconto = 0;
+  let valor_desconto = 0;
+
+  const estado = verificacaoClienteEstado(cnpj_cpf)
+
+  if (quantidadeTotalPedido < 6 && consumidor_final == "S") {
+    return res.json({
+      sucesso: false,
+      mensagem: `Pedido deve ter no minimo 6 itens para consumidores finais (Clientes basicos), porem só tem: ${quantidadeTotalPedido}`
+    });
+  } 
+  
+  if (consumidor_final == "S") {
+    valorTotalPedido = valorTotalPedido + (valorTotalPedido * 65/100);
+  }
+
+  if (valorTotalPedido < 600 && consumidor_final == "N") {
+    return res.json({
+      sucesso: false,
+      mensagem: `Pedido deve ter no minimo 600 reais em produtos para consumidores não finais (Revendedores), porem só tem: R$ ${valorTotalPedido}`
+    });
+  }
+  
+  if (consumidor_final == "N") {
+    if (quantidadeTotalPedido >= 60) {
+      desconto = (20/100);
+      valor_desconto = valorTotalPedido*desconto
+    }
+  }
+
+  console.log("Desconto e valor do desconto: ", desconto, " e ", valor_desconto)
+}
 module.exports = router;

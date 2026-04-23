@@ -11,6 +11,18 @@ router.post('/consultar-cliente', async (req, res) => {
 
   const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, '');
 
+  let consumidor_final = "-";
+
+  if (cnpj_cpfLimpo.length == 11) {
+    consumidor_final = "S";
+  } else if (cnpj_cpfLimpo.length == 14) {
+    consumidor_final = "N";
+  } else {
+    return "erro"
+  }
+
+  const mensagem_final = await verificacaoCliente(cnpj_cpfLimpo, consumidor_final);
+
   try {
    const respostaOmie = await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', {
       call: 'ListarClientes',
@@ -32,7 +44,7 @@ router.post('/consultar-cliente', async (req, res) => {
 
       return res.json({
         cadastrado: true,
-        mensagem: "cliente encontrado!",
+        mensagem: `Cliente encontrado! Informações da categoria do cliente: ${mensagem_final}`,
         dados: {
           codigo_cliente_omie: clientEncontrado.codigo_cliente_omie,
           nome: clientEncontrado.razao_social,
@@ -110,6 +122,18 @@ router.post('/cadastrar-cliente', async (req, res) => {
     const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, ''); 
     const cepLimpo = String(cep).replace(/\D/g, '');
 
+    let consumidor_final = "-";
+
+    if (cnpj_cpfLimpo.length == 11) {
+      consumidor_final = "S";
+    } else if (cnpj_cpfLimpo.length == 14) {
+      consumidor_final = "N";
+    } else {
+      return "erro"
+    }
+
+    const mensagem_final = await verificacaoCliente(cnpj_cpfLimpo, consumidor_final);
+
     const respostaViaCep = await axios.get(`https://viacep.com.br/ws/${cepLimpo}/json/`);
 
     if (respostaViaCep.data.erro) {
@@ -141,7 +165,7 @@ router.post('/cadastrar-cliente', async (req, res) => {
   
     return res.json({
       sucesso: true,
-      mensagem: "Cliente cadastrado com sucesso",
+      mensagem: `Cliente cadastrado com sucesso, informações da categoria do cliente: ${mensagem_final}`,
       codigo_cliente_omie: respostaOmie.data.codigo_cliente_omie
     })
   } catch (error) {
@@ -187,5 +211,39 @@ router.delete('/excluir-cadastro', async (req, res) => {
         });
     }
 })
+
+async function verificacaoCliente(cnpj_cpf, consumidor_final) {
+
+  const respostaOmie = await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', {
+    call: 'ListarClientes',
+    app_key: process.env.OMIE_APP_KEY,
+    app_secret: process.env.OMIE_APP_SECRET,
+    param: [
+      {     
+        pagina: 1,
+        registros_por_pagina: 1,
+        apenas_importado_api: "N",
+        clientesFiltro: {
+          cnpj_cpf: cnpj_cpf
+        }
+      }
+    ]
+  });
+
+  if (consumidor_final == "N") {
+    const estadoRevendedor = respostaOmie.data.clientes_cadastro[0].estado
+
+    if (estadoRevendedor == "PE") {
+      return "CLIENTE PERNAMBUCO: 15% de desconto para todos os parceiros com CNPJ em Pernambuco e Na compra de 2 caixas ou mais (Premium, Slim ou combinadas), o desconto passa para 20%, OBS: Os descontos não são cumulativos (aplica-se sempre o maior benefício, Condição válida para parceiros comerciais ativos (CNPJ) Possibilidade de mix entre produtos e linhas para atingir o volume mínimo"
+    } else {
+      return "CLIENTE BRASIL: Frete: pedidos acima de R$ 1.000,00 com frete grátis, limitado a R$ 40,00 (excedente por conta do cliente). Desconto por volume: compras a partir de 2 caixas (mix livre) garantem 15% de desconto. Desconto adicional: 5% OFF para pagamentos à vista ou via Pix. Bonificação: cliente recebe 10% do valor do pedido em produtos bonificados (conforme disponibilidade ou estratégia comercial). Regras gerais: descontos cumulativos (volume + pagamento à vista/Pix), bonificação calculada sobre o valor final do pedido, condição válida para clientes com CNPJ ativo em todo o Brasil, possibilidade de mix entre produtos das linhas Premium e Slim, frete sujeito à análise logística por região."
+    }
+  } else if (consumidor_final == "S") {
+    return "CLIENTE FINAL: Quantidade mínima: pedido mínimo de 6 produtos (podendo ser mix entre linhas). Frete: frete grátis para pedidos acima de R$ 200,00. Formas de pagamento: pagamento à vista (Pix ou transferência) ou cartão de crédito (parcelamento conforme operadora). Observações: condição válida para clientes pessoa física (CPF), possibilidade de mix entre produtos das linhas Premium e Slim, frete sujeito à análise logística por região."
+  } else {
+    return "erro baubau"
+  }
+
+}
 
 module.exports = router;
