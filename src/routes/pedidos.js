@@ -32,9 +32,9 @@ router.post('/criar-pedido', async (req, res) => {
         quantidadeTotalPedido += Number(produto.quantidade);
     });
 
-    verificarDescontos()
+    const valor_desconto = await verificarDescontos(cnpj_cpfLimpo, consumidor_final, valorTotalPedido, quantidadeTotalPedido, produtos)
 
-    const dadosFinanceiros = construirParcelas(valorTotalPedido, forma_pagamento, consumidor_final, desconto);
+    const dadosFinanceiros = construirParcelas(valorTotalPedido, forma_pagamento, consumidor_final, valor_desconto);
 
     const respostaCpf = await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', {
       call: 'ListarClientes',
@@ -172,14 +172,14 @@ router.post('/gerar-cobranca-credito', async (req, res) => {
     const metodo_pagmento = repostaPedido.data.pedido_venda_produto.lista_parcelas.parcela[0].meio_pagamento;
     let linkPagamento = "a";
 
-    if (metodo_pagmento == "03") {
+    if (metodo_pagmento == "03" || metodo_pagmento == "17") {
       linkPagamento = await pagamentoCredito(produtos, valorMerc, valorDesconto);
     }
 
     if (linkPagamento == "a") {
       return res.json({
         sucesso: true,
-        detalhes: "Seu pedido foi feito em boleto ou pix, entraremos em contato quando for emitido o modo de pagar"
+        detalhes: "Seu pedido foi feito em boleto, entraremos em contato quando for emitido o modo de pagar"
       })
     } else {
       return res.json({
@@ -238,7 +238,7 @@ router.post('/consultar-pedido', async (req, res) => {
 
 });
 
-function construirParcelas(valorTotal, forma_pagamento, consumidor_final, desconto) {
+function construirParcelas(valorTotal, forma_pagamento, consumidor_final, valor_desconto) {
     let codigo_parcela_omie = "";
     let meio_pag_omie = "";
     let n_parcela_omie = 0;
@@ -269,7 +269,7 @@ function construirParcelas(valorTotal, forma_pagamento, consumidor_final, descon
         meio_pag_omie = "99"; // Outros
     }
 
-    const valorTotalFinal = valorTotal + (valorTotal * desconto);
+    const valorTotalFinal = valorTotal + valor_desconto;
 
     let parcelasGeradas = [];
     
@@ -394,37 +394,58 @@ async function verificacaoClienteEstado(cnpj_cpf) {
 
 }
 
-async function verificarDescontos(cnpj_cpf, consumidor_final, valorTotalPedido, quantidadeTotalPedido) {
+async function verificarDescontos(cnpj_cpf, consumidor_final, valorTotalPedido, quantidadeTotalPedido, produtos) {
   let desconto = 0;
   let valor_desconto = 0;
 
-  const estado = verificacaoClienteEstado(cnpj_cpf)
+  const estado = await verificacaoClienteEstado(cnpj_cpf);
 
-  if (quantidadeTotalPedido < 6 && consumidor_final == "S") {
-    return res.json({
-      sucesso: false,
-      mensagem: `Pedido deve ter no minimo 6 itens para consumidores finais (Clientes basicos), porem só tem: ${quantidadeTotalPedido}`
-    });
-  } 
-  
   if (consumidor_final == "S") {
-    valorTotalPedido = valorTotalPedido + (valorTotalPedido * 65/100);
-  }
 
-  if (valorTotalPedido < 600 && consumidor_final == "N") {
-    return res.json({
-      sucesso: false,
-      mensagem: `Pedido deve ter no minimo 600 reais em produtos para consumidores não finais (Revendedores), porem só tem: R$ ${valorTotalPedido}`
-    });
-  }
+    if (quantidadeTotalPedido < 6) {
+      return res.json({
+        sucesso: false,
+        mensagem: `Pedido deve ter no minimo 6 itens para consumidores finais (Clientes basicos), porem só tem: ${quantidadeTotalPedido}`
+      });
+    } 
   
-  if (consumidor_final == "N") {
-    if (quantidadeTotalPedido >= 60) {
-      desconto = (20/100);
-      valor_desconto = valorTotalPedido*desconto
+  } else {
+    
+    if (estado == "PE") {
+      if (quantidadeTotalPedido >= 60) {
+        desconto = (20/100);
+        valor_desconto = valorTotalPedido*desconto;
+      } else {
+        desconto = (15/100);
+        valor_desconto = valorTotalPedido*desconto;
+      }
+    } else {
+      if (quantidadeTotalPedido >= 60) {
+        desconto += (15/100);
+        valor_desconto += valorTotalPedido*desconto;
+      }
+      if (forma_pagamento == "pix_a_vista") {
+        desconto += (5/100);
+        valor_desconto += valorTotalPedido*desconto;
+      }
+
     }
+
+    const valorFinal = valorTotalPedido - valor_desconto;
+
+    const valor10pct = valorFinal*(10/100);
+
+    const quantidade_bonificacao = Math.floor(valor10pct/18);
+
+    if (quantidade_bonificacao > 0) {
+      produtos.push({codigo_produto: 1958902987, quantidade: quantidade_bonificacao, valor_unitario: 0})
+    }
+  
   }
 
   console.log("Desconto e valor do desconto: ", desconto, " e ", valor_desconto)
+
+  return valor_desconto
 }
+
 module.exports = router;
