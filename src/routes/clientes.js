@@ -5,11 +5,15 @@ const router = express.Router();
 router.post('/consultar-cliente', async (req, res) => {
   const cnpj_cpf = req.body.cnpj_cpf;
 
+  console.log("👀 DADOS QUE CHEGARAM DA IA:", req.body);
+
   if (!cnpj_cpf) {
-    return res.status(400).json({ erro: 'Você esqueceu de mandar o CPF!' });
+    return res.status(400).json({ erro: 'Você esqueceu de mandar o CPF ou CNPJ!' });
   }
 
   const cnpj_cpfLimpo = String(cnpj_cpf).replace(/\D/g, '');
+
+  console.log(cnpj_cpfLimpo);
 
   let consumidor_final = "-";
 

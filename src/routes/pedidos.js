@@ -32,9 +32,9 @@ router.post('/criar-pedido', async (req, res) => {
         quantidadeTotalPedido += Number(produto.quantidade);
     });
 
-    const valor_desconto = await verificarDescontos(cnpj_cpfLimpo, consumidor_final, valorTotalPedido, quantidadeTotalPedido, produtos)
+    const desconto = await verificarDescontos(cnpj_cpfLimpo, consumidor_final, valorTotalPedido, quantidadeTotalPedido, produtos)
 
-    const dadosFinanceiros = construirParcelas(valorTotalPedido, forma_pagamento, consumidor_final, valor_desconto);
+    const dadosFinanceiros = construirParcelas(valorTotalPedido, forma_pagamento, consumidor_final, desconto[0]);
 
     const respostaCpf = await axios.post('https://app.omie.com.br/api/v1/geral/clientes/', {
       call: 'ListarClientes',
@@ -95,9 +95,7 @@ router.post('/criar-pedido', async (req, res) => {
             "quantidade_itens": detalhesPedido.length,
             "etapa": "10",
             "codigo_parcela": dadosFinanceiros.codigo_parcela_omie,
-            "origem_pedido": "API",
-            "tipo_desconto_pedido": "V",
-            "valor_desconto_pedido": valor_desconto
+            "origem_pedido": "API"
           },
           "det": detalhesPedido,
           "informacoes_adicionais": {
@@ -112,6 +110,11 @@ router.post('/criar-pedido', async (req, res) => {
         }
         ]
     };
+
+    if (desconto[1] == "V") {
+      pacotePedido.param[0].cabecalho.valor_desconto = desconto[0];
+      pacotePedido.param[0].cabecalho.tipo_desconto_pedido = desconto[1];
+    }
 
     console.log("-> A enviar o pedido múltiplo para a Omie...");
     const respostaOmie = await axios.post('https://app.omie.com.br/api/v1/produtos/pedido/', pacotePedido);
@@ -158,8 +161,8 @@ router.post('/gerar-cobranca-credito', async (req, res) => {
 
     const repostaPedido = await axios.post('https://app.omie.com.br/api/v1/produtos/pedido/', pacoteConsulta);
 
-    const valorDesconto = (repostaPedido.data.pedido_venda_produto.total_pedido.valor_descontos)
-    const valorMerc = (repostaPedido.data.pedido_venda_produto.total_pedido.valor_mercadorias)
+    const valorDesconto = (repostaPedido.data.pedido_venda_produto.total_pedido.valor_descontos) || 0;
+    const valorMerc = (repostaPedido.data.pedido_venda_produto.total_pedido.valor_mercadorias) || 0;
     const produtos = repostaPedido.data.pedido_venda_produto.det.map(item => {
       return {
         "descricao": item.produto.descricao,
@@ -403,11 +406,8 @@ async function verificarDescontos(cnpj_cpf, consumidor_final, valorTotalPedido, 
   if (consumidor_final == "S") {
 
     if (quantidadeTotalPedido < 6) {
-      return res.json({
-        sucesso: false,
-        mensagem: `Pedido deve ter no minimo 6 itens para consumidores finais (Clientes basicos), porem só tem: ${quantidadeTotalPedido}`
-      });
-    } 
+      throw new Error(`Pedido deve ter no minimo 6 itens para consumidores finais (Clientes basicos), porem só tem: ${quantidadeTotalPedido}`)
+    }
   
   } else {
     
@@ -440,12 +440,14 @@ async function verificarDescontos(cnpj_cpf, consumidor_final, valorTotalPedido, 
     if (quantidade_bonificacao > 0) {
       produtos.push({codigo_produto: 1958902987, quantidade: quantidade_bonificacao, valor_unitario: 0})
     }
+
+    return [valor_desconto, "V"]
   
   }
 
   console.log("Desconto e valor do desconto: ", desconto, " e ", valor_desconto)
 
-  return valor_desconto
+  return [0, ""]
 }
 
 module.exports = router;

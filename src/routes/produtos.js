@@ -128,8 +128,7 @@ router.post('/consultar-produto', async (req, res) => {
       existe: true,
       nome: produtoDetalhado.descricao,
       codigo: produtoDetalhado.codigo_produto,
-      valor_unitario: produtoDetalhado.valor_unitario,
-      mensagem: `Encontrei o produto ${produtoDetalhado.descricao} no sistema. O preço unitário é R$ ${produtoDetalhado.valor_unitario}.`
+      mensagem: `Encontrei o produto ${produtoDetalhado.descricao} no sistema.`
     });
 
   } catch (error) {
